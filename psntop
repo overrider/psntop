@@ -1,0 +1,210 @@
+#!/usr/bin/perl 
+
+#===============================================================================
+#
+#         FILE:  psntop.pl
+#
+#        USAGE:  ./psntop.pl 
+#
+#  DESCRIPTION:  A Simple Uptime Display Utility that shows wheter hosts are up
+#  				 or down. Does the same thing as the old sntop program done in c
+#
+#      OPTIONS:  --- 
+# REQUIREMENTS:  a .psntop File that specifies the hosts you want to monitor 
+#         BUGS:  ---
+#        NOTES:  a firewalled host may appear as down even if it is not 
+#       AUTHOR:  David Schulz (DS), <ds@pg-sec.com>
+#      COMPANY:  http://www.pg-sec.com
+#      VERSION:  1.0
+#      CREATED:  Saturday, January 31, 2009 01:29:37 HKT HKT
+#     REVISION:  ---
+#===============================================================================
+
+use strict;
+use warnings;
+use Term::ANSIColor qw(:constants colored);
+use Net::Ping;
+use Data::Dumper;
+use IO::Socket;
+
+if (@ARGV){
+	print "This Program needs no Arguments as of this time\n";
+	exit;
+}
+
+#$SIG{'INT' } = 'trap_key'; (CTRL C)
+$SIG{'QUIT'} = 'trap_key';
+$SIG{'HUP' } = 'trap_key';
+$SIG{'TRAP'} = 'trap_key';
+$SIG{'ABRT'} = 'trap_key';
+$SIG{'STOP'} = 'trap_key';
+
+sub trap_key() {
+	print "Key ignored\n";
+}
+
+
+sub check_port($$){
+    my $addr = shift;
+    my $port = shift;
+
+    my $socket = eval {
+        return IO::Socket::INET->new(
+            Proto       => "tcp",
+            PeerAddr    => $addr,
+            PeerPort    => $port,
+            Reuse       => 1,
+            Timeout     => 3)
+         or return undef;
+    };
+    if ($socket) {
+      eval { return $socket->close; };
+      return 1;
+    } else {
+      return undef;
+    }
+}
+
+sub ping_ip($){
+    my $ip_address = shift;
+
+    my $ping = Net::Ping->new();
+    if ($ping->ping($ip_address,0.2)){
+        $ping->close();
+        return 1;
+    } else {
+        $ping->close();
+        return undef;
+    }
+}
+
+my $filename   = "$ENV{HOME}/.psntop.conf";
+my $frequency  = 10;
+my (%host_info) = ();
+my ($sec,$min,$hour) = localtime(time);
+my $timestamp = $hour . ":" . $min . ":" . $sec;
+
+open(FILE,"<$filename") || die ("Could not open $filename : $!\n");
+my @hosts = <FILE>;
+close(FILE);
+
+@hosts = grep(!/^#/, @hosts);    # weed out comments
+
+my $host_id = 0;
+foreach my $host (@hosts){
+	$host_id++;
+	chomp($host);
+	my($display_name,$ip_address,$ip_port,$check_type,$description) = split("::",$host);
+
+	$host_info{$host_id}{'display_name'}= $display_name;
+	$host_info{$host_id}{'ip_address'}  = $ip_address;
+	$host_info{$host_id}{'ip_port'}     = $ip_port;
+	$host_info{$host_id}{'check_type'}  = $check_type;
+	$host_info{$host_id}{'description'} = $description;
+	$host_info{$host_id}{'timestamp'}   = $timestamp;
+	$host_info{$host_id}{'status'}      = "Down";
+}
+
+my %host_times;
+
+my $clear_screen = `clear`;
+
+print "Doing an initial Poll of all hosts, please wait a few seconds...\n";
+
+while (1){
+	my $status  = "Unknown";
+
+	my $c_total = 0;
+	my $c_down  = 0;
+	my $c_alive = 0;
+    my $res     = 0;
+
+    foreach my $host_id (keys %host_info){
+		($sec,$min,$hour) = localtime(time);
+		$timestamp = $hour . ":" . $min . ":" . $sec;
+
+		if($host_info{$host_id}->{'check_type'} eq "port"){
+			print "Checking Port\n";
+			$res = &check_port($host_info{$host_id}->{'ip_address'}, $host_info{$host_id}->{'ip_port'});
+		}
+
+		if($host_info{$host_id}->{'check_type'} eq "icmp"){
+			$res = &ping_ip($host_info{$host_id}->{'ip_address'});
+        }
+
+        if($res){
+            $status = "Alive";
+        } else {
+            $status = "Down";
+        }
+
+        if ($host_info{$host_id}->{'status'} ne $status){
+            $host_info{$host_id}->{'timestamp'} = $timestamp;
+        }
+
+		$host_info{$host_id}->{'status'} = $status;
+
+		$c_total++;
+		if($status eq 'Alive'){
+            $c_alive++;
+        } else {
+            $c_down++;
+        }
+	}
+
+	print $clear_screen;
+
+	print colored ("PSNTOP (Perl Simple Network Top)", 'black on_yellow'), "\n";
+	print YELLOW, "-" x 90 . "\n", RESET;
+	print "\n";
+	printf("%-20s %-15s %-10s %-10s %-12s %-6s %s\n", "Name","Host or IP","Port","Check","Last Change","Status","Description");
+	printf("%s\n","-" x 90);
+
+    foreach my $host_id (keys %host_info){
+    	if($host_info{$host_id}->{'status'} eq 'Down'){
+    	    next;
+    	}
+    	print GREEN;
+        printf("%-20s %-15s %-10s %-10s %-12s %-6s %s\n",
+		    $host_info{$host_id}->{'display_name'},
+		    $host_info{$host_id}->{'ip_address'},
+		    $host_info{$host_id}->{'ip_port'},
+		    $host_info{$host_id}->{'check_type'},
+		    $host_info{$host_id}->{'timestamp'},
+		    $host_info{$host_id}->{'status'},
+		    $host_info{$host_id}->{'description'}
+		);
+    }
+
+	print RESET;
+	print "\n";
+
+	if($c_down > 0){
+        print "The following hosts are down\n";
+        print "-" x 90 . "\n";
+
+        foreach my $host_id (keys %host_info){
+            if($host_info{$host_id}->{'status'} eq 'Alive'){
+                next;
+            }
+            print RED;
+            printf("%-20s %-15s %-10s %-10s %-12s %-6s %s\n",
+                $host_info{$host_id}->{'display_name'},
+                $host_info{$host_id}->{'ip_address'},
+                $host_info{$host_id}->{'ip_port'},
+                $host_info{$host_id}->{'check_type'},
+                $host_info{$host_id}->{'timestamp'},
+                $host_info{$host_id}->{'status'},
+                $host_info{$host_id}->{'description'}
+            );
+        }
+    }
+
+	print RESET;
+	print "\n";
+
+	print "$c_total hosts polled, ".scalar($c_alive)." Up, ".scalar($c_down)." Down\n";
+	print "Last Checked " . localtime() . " "." (every $frequency seconds)\n";
+	sleep $frequency;
+}
+print "\n";
